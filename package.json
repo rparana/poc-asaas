@@ -1,0 +1,31 @@
+{
+  "name": "asaas-cinema-reservation-engine",
+  "version": "1.0.0",
+  "description": "Cinema Seat Reservation Engine PoC with MongoDB and Redis",
+  "type": "module",
+  "main": "src/server.ts",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "db:seed": "tsx src/infra/db/seed.ts",
+    "lint": "biome check src",
+    "format": "biome format --write src"
+  },
+  "keywords": ["mongodb", "redis", "fastify", "concurrency", "distributed-lock"],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "fastify": "^5.2.1",
+    "ioredis": "^5.5.0",
+    "mongodb": "^6.13.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/node": "^22.13.4",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3"
+  }
+}

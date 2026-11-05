@@ -1,0 +1,80 @@
+services:
+  mongo:
+    image: mongo:7.0
+    container_name: asaas-cinema-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_DATABASE=cinema
+    volumes:
+      - mongo-data:/data/db
+    command: [ "mongod", "--replSet", "rs0", "--bind_ip_all" ]
+    healthcheck:
+      test: mongosh --port 27017 --eval 'try { if (rs.status().ok === 1) quit(0); } catch (e) { try { if (rs.initiate({ _id:"rs0", members:[{ _id:0, host:"localhost:27017" }] }).ok === 1) quit(0); } catch (err) {} } quit(1);' --quiet
+      interval: 3s
+      timeout: 5s
+      retries: 15
+      start_period: 3s
+
+  redis:
+    image: redis:7-alpine
+    container_name: asaas-cinema-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+
+  redis-insight:
+    image: redis/redisinsight:latest
+    container_name: asaas-cinema-redis-insight
+    restart: unless-stopped
+    ports:
+      - "5540:5540"
+    volumes:
+      - redisinsight-data:/data
+    depends_on:
+      - redis
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: asaas-cinema-api
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    env_file:
+      - .env
+    environment:
+      - MONGO_URI=mongodb://mongo:27017/cinema?replicaSet=rs0&directConnection=true
+      - MONGO_DB_NAME=cinema
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - CHOKIDAR_USEPOLLING=true
+    volumes:
+      - .:/app
+      - /app/node_modules
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    develop:
+      watch:
+        - action: sync
+          path: ./src
+          target: /app/src
+        - action: rebuild
+          path: package.json
+
+volumes:
+  mongo-data:
+  redis-data:
+  redisinsight-data:
