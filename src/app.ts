@@ -1,3 +1,4 @@
+import cors from '@fastify/cors';
 import fastify, { type FastifyInstance } from 'fastify';
 import { ZodError } from 'zod';
 import { AppError } from './domain/errors/seat-errors.js';
@@ -10,6 +11,12 @@ export function buildApp(): FastifyInstance {
     logger: {
       level: 'info',
     },
+  });
+
+  // Habilita CORS para clientes locais e conexões cross-origin
+  app.register(cors, {
+    origin: true,
+    credentials: true,
   });
 
   // Global Error Handler

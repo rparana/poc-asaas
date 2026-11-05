@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../app.js';
 import { closeMongo, connectMongo, getSessionSeatsCollection } from '../infra/db/mongo.js';
 import { closeRedis, getRedisClient } from '../infra/redis/client.js';
+import { sessionEventBus } from '../infra/redis/session-event-bus.js';
 
 describe('Testes de Concorrência e Lock Distribuído', () => {
   const app = buildApp();
@@ -16,6 +17,7 @@ describe('Testes de Concorrência e Lock Distribuído', () => {
 
   afterAll(async () => {
     await app.close();
+    await sessionEventBus.close();
     await closeMongo();
     await closeRedis();
   });

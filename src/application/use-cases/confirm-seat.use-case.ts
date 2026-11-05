@@ -6,6 +6,7 @@ import {
 import type { SessionSeat } from '../../infra/db/models/session-seat.js';
 import { getSessionSeatsCollection } from '../../infra/db/mongo.js';
 import { RedisLockService } from '../../infra/redis/redis-lock-service.js';
+import { type SessionEventBus, sessionEventBus } from '../../infra/redis/session-event-bus.js';
 
 export interface ConfirmSeatInput {
   sessionId: string;
@@ -14,7 +15,10 @@ export interface ConfirmSeatInput {
 }
 
 export class ConfirmSeatUseCase {
-  constructor(private readonly lockService: RedisLockService = new RedisLockService()) {}
+  constructor(
+    private readonly lockService: RedisLockService = new RedisLockService(),
+    private readonly eventBus: SessionEventBus = sessionEventBus,
+  ) {}
 
   async execute(input: ConfirmSeatInput): Promise<SessionSeat> {
     const { sessionId, seatNumber, cartId } = input;
@@ -65,6 +69,13 @@ export class ConfirmSeatUseCase {
 
     // 2. Remove o lock distribuído no Redis (Script Lua seguro)
     await this.lockService.releaseLock(sessionId, seatNumber, cartId);
+
+    // Publica evento de domínio em tempo real
+    await this.eventBus.publish(sessionId, {
+      event: 'SEAT_RESERVED',
+      sessionId,
+      seatNumber,
+    });
 
     return updatedSeat;
   }

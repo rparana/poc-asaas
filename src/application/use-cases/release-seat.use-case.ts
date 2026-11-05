@@ -2,6 +2,7 @@ import { InvalidSeatHoldError, SeatNotFoundError } from '../../domain/errors/sea
 import type { SessionSeat } from '../../infra/db/models/session-seat.js';
 import { getSessionSeatsCollection } from '../../infra/db/mongo.js';
 import { RedisLockService } from '../../infra/redis/redis-lock-service.js';
+import { type SessionEventBus, sessionEventBus } from '../../infra/redis/session-event-bus.js';
 
 export interface ReleaseSeatInput {
   sessionId: string;
@@ -10,7 +11,10 @@ export interface ReleaseSeatInput {
 }
 
 export class ReleaseSeatUseCase {
-  constructor(private readonly lockService: RedisLockService = new RedisLockService()) {}
+  constructor(
+    private readonly lockService: RedisLockService = new RedisLockService(),
+    private readonly eventBus: SessionEventBus = sessionEventBus,
+  ) {}
 
   async execute(input: ReleaseSeatInput): Promise<SessionSeat> {
     const { sessionId, seatNumber, cartId } = input;
@@ -38,6 +42,13 @@ export class ReleaseSeatUseCase {
 
     // 2. Libera o lock atômico no Redis
     await this.lockService.releaseLock(sessionId, seatNumber, cartId);
+
+    // Publica evento de domínio em tempo real
+    await this.eventBus.publish(sessionId, {
+      event: 'SEAT_RELEASED',
+      sessionId,
+      seatNumber,
+    });
 
     if (!updatedSeat) {
       const existingSeat = await collection.findOne({ sessionId, seatNumber });

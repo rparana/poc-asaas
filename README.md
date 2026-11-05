@@ -51,6 +51,9 @@ flowchart TD
 | **Driver Nativo MongoDB** | Manipulação direta sem overhead de hidratação de ODM |
 | **Redis** (v7.0) | Cache e distributed lock em memória com execução atômica via Lua Scripts |
 | **ioredis** | Cliente Redis performático com pool de conexões e reconexão automática |
+| **Vue 3 + Vite** | SPA reativa simulando o totem de autoatendimento do cinema |
+| **Tailwind CSS v4** | Estilização moderna com `@tailwindcss/vite` e microinterações visuais |
+| **Server-Sent Events (SSE)** | Streaming unidirecional em tempo real acoplado a Redis Pub/Sub |
 | **Biome** | Formatação e linter de código ultrarrápidos |
 | **Docker & Docker Compose** | Orquestração completa dos contêineres com **Hot-Reload em tempo real** |
 
@@ -63,7 +66,17 @@ flowchart TD
 │   ├── PRD.md                                   # Requisitos do produto e regras de negócio
 │   └── adr/
 │       ├── 001-seat-locking-and-concurrency.md  # ADR: Estratégia de Lock Redis + Mongo
-│       └── 002-individual-seat-entities.md      # ADR: Assentos como documentos materializados
+│       ├── 002-individual-seat-entities.md      # ADR: Assentos como documentos materializados
+│       └── 003-realtime-updates-via-sse.md      # ADR: Streaming SSE com Redis Pub/Sub
+├── frontend/                                    # SPA em Vue 3 + Vite + Tailwind CSS v4
+│   ├── src/
+│   │   ├── components/
+│   │   │   ├── SeatMap.vue                      # Grade interativa de assentos, SSE e timers
+│   │   │   └── ToastNotification.vue            # Alertas flutuantes de conflito (409) e sucesso
+│   │   ├── App.vue                              # Layout principal e switcher de totem
+│   │   └── style.css                            # Estilização com Tailwind v4
+│   ├── index.html                               # HTML montador da SPA
+│   └── vite.config.ts                           # Proxy reverso (/api -> backend:3001)
 ├── src/
 │   ├── application/
 │   │   └── use-cases/
@@ -148,6 +161,29 @@ Cria o índice único composto `{ sessionId: 1, seatNumber: 1 }` (`unique: true`
 ```bash
 docker compose exec api pnpm db:seed
 ```
+
+---
+
+### Passo 4: Iniciar a Interface Web Reativa (Totem SPA)
+
+Inicie o servidor de desenvolvimento do frontend:
+
+```bash
+pnpm frontend:dev
+```
+
+Acesse o totem interativo no navegador:
+👉 **[http://localhost:5173](http://localhost:5173)**
+
+> [!TIP]
+> **Como Demonstrar a Concorrência Visualmente:**
+> 1. Abra duas janelas do navegador lado a lado em [http://localhost:5173](http://localhost:5173).
+> 2. Clique em **"Abrir Outra Aba"** ou no botão **"🔄 Trocar"** em uma das abas para que cada janela represente um **totem/carrinho diferente**.
+> 3. Na Aba 1, clique em um assento verde (`AVAILABLE`):
+>    - Na **Aba 1**, o assento fica **amarelo** com borda pulsante, timer regressivo e botões de "Confirmar Compra" e "Liberar".
+>    - Instantaneamente na **Aba 2** (via SSE + Redis Pub/Sub), o assento muda para **laranja com cadeado** indicando *"Em seleção por outro usuário"*.
+> 4. Se a Aba 2 tentar clicar no assento enquanto ele está bloqueado, receberá um **alerta/toast flutuante (HTTP 409)**: *"Cadeira indisponível! Outro usuário acabou de selecioná-la."*
+> 5. Ao confirmar a compra na Aba 1, o assento vira **vermelho ("Vendido")** em tempo real em todas as telas conectadas.
 
 ---
 
@@ -278,7 +314,21 @@ curl -s -i -X DELETE http://localhost:3001/api/v1/sessions/sessao-cinema-101/sea
 
 ---
 
-### 5. Checagem de Saúde (Healthcheck)
+### 5. Streaming em Tempo Real (Server-Sent Events)
+Conexão persistente SSE para transmissão reativa unidirecional de eventos disparados pelo Redis Pub/Sub:
+
+```bash
+curl -N http://localhost:3001/api/v1/sessions/sessao-cinema-101/stream
+```
+
+Eventos emitidos:
+- `SEAT_HELD`: `{ "event": "SEAT_HELD", "seatNumber": "A1", "cartId": "...", "expiresAt": "..." }`
+- `SEAT_RESERVED`: `{ "event": "SEAT_RESERVED", "seatNumber": "A1" }`
+- `SEAT_RELEASED`: `{ "event": "SEAT_RELEASED", "seatNumber": "A1" }`
+
+---
+
+### 6. Checagem de Saúde (Healthcheck)
 ```bash
 curl -s http://localhost:3001/health
 ```
@@ -313,6 +363,7 @@ Abra no navegador:
 | Comando | Descrição |
 | :--- | :--- |
 | `docker compose up -d` | Sobe o ambiente completo (DBs + API em Node 26) |
+| `pnpm frontend:dev` | Inicia o Totem SPA em Vue 3 + Tailwind v4 em `http://localhost:5173` |
 | `docker compose exec api pnpm db:seed` | Executa o seed de assentos no MongoDB via Docker |
 | `docker compose exec api pnpm test` | Executa os testes automatizados de concorrência com Vitest |
 | `docker compose logs -f api` | Acompanha os logs e hot-reload da aplicação |

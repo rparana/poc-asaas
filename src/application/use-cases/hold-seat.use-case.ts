@@ -7,6 +7,7 @@ import {
 import type { SessionSeat } from '../../infra/db/models/session-seat.js';
 import { getSessionSeatsCollection } from '../../infra/db/mongo.js';
 import { RedisLockService } from '../../infra/redis/redis-lock-service.js';
+import { type SessionEventBus, sessionEventBus } from '../../infra/redis/session-event-bus.js';
 
 export interface HoldSeatInput {
   sessionId: string;
@@ -16,7 +17,10 @@ export interface HoldSeatInput {
 }
 
 export class HoldSeatUseCase {
-  constructor(private readonly lockService: RedisLockService = new RedisLockService()) {}
+  constructor(
+    private readonly lockService: RedisLockService = new RedisLockService(),
+    private readonly eventBus: SessionEventBus = sessionEventBus,
+  ) {}
 
   async execute(input: HoldSeatInput): Promise<SessionSeat> {
     const { sessionId, seatNumber, cartId } = input;
@@ -71,6 +75,17 @@ export class HoldSeatUseCase {
 
         throw new SeatAlreadyTakenError(seatNumber);
       }
+
+      // Publica evento de domínio em tempo real
+      await this.eventBus.publish(sessionId, {
+        event: 'SEAT_HELD',
+        sessionId,
+        seatNumber,
+        cartId,
+        expiresAt: updatedSeat.expiresAt
+          ? updatedSeat.expiresAt.toISOString()
+          : expiresAt.toISOString(),
+      });
 
       return updatedSeat;
     } catch (error) {

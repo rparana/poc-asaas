@@ -2,6 +2,7 @@ import { buildApp } from './app.js';
 import { env } from './config/env.js';
 import { closeMongo, connectMongo } from './infra/db/mongo.js';
 import { closeRedis, getRedisClient } from './infra/redis/client.js';
+import { sessionEventBus } from './infra/redis/session-event-bus.js';
 
 async function main() {
   const app = buildApp();
@@ -20,6 +21,7 @@ async function main() {
     console.log(`🚀 Server listening at http://${env.HOST}:${env.PORT}`);
   } catch (error) {
     app.log.error(error);
+    await sessionEventBus.close();
     await closeMongo();
     await closeRedis();
     process.exit(1);
@@ -30,6 +32,7 @@ async function main() {
     process.on(signal, async () => {
       console.log(`\nReceived ${signal}. Gracefully shutting down...`);
       await app.close();
+      await sessionEventBus.close();
       await closeMongo();
       await closeRedis();
       console.log('Clean shutdown completed.');

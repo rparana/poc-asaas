@@ -4,6 +4,7 @@ import { ConfirmSeatUseCase } from '../../application/use-cases/confirm-seat.use
 import { HoldSeatUseCase } from '../../application/use-cases/hold-seat.use-case.js';
 import { ListSeatsUseCase } from '../../application/use-cases/list-seats.use-case.js';
 import { ReleaseSeatUseCase } from '../../application/use-cases/release-seat.use-case.js';
+import { sessionEventBus } from '../../infra/redis/session-event-bus.js';
 
 const sessionParamsSchema = z.object({
   sessionId: z.string().min(1, 'sessionId é obrigatório'),
@@ -101,6 +102,37 @@ export const seatRoutes: FastifyPluginAsync = async (fastify) => {
         seatNumber: seat.seatNumber,
         status: seat.status,
       },
+    });
+  });
+
+  // RF-RealTime: Endpoint SSE para atualizações em tempo real via Redis Pub/Sub
+  fastify.get('/sessions/:sessionId/stream', async (request, reply) => {
+    const { sessionId } = sessionParamsSchema.parse(request.params);
+
+    reply.raw.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+      'Access-Control-Allow-Origin': '*',
+    });
+
+    // Envia handshake inicial de conexão
+    reply.raw.write(': connected\n\n');
+
+    // Intervalo de ping para manter conexão viva
+    const keepAlive = setInterval(() => {
+      reply.raw.write(': ping\n\n');
+    }, 15000);
+
+    // Inscreve no barramento compartilhado do Redis
+    const unsubscribe = await sessionEventBus.subscribe(sessionId, (event) => {
+      reply.raw.write(`event: ${event.event}\ndata: ${JSON.stringify(event)}\n\n`);
+    });
+
+    request.raw.on('close', () => {
+      clearInterval(keepAlive);
+      unsubscribe();
     });
   });
 };
