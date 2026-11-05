@@ -4,6 +4,11 @@
 > **Status:** Prova de Conceito (PoC)  
 > Este repositório é estritamente uma **Prova de Conceito experimental** desenvolvida para validar estratégias de concorrência em tempo real, consistência atômica e prevenção de *overbooking* utilizando **MongoDB** e **Redis**. Não representa a arquitetura final nem o código de produção definitivo.
 
+> [!IMPORTANT]  
+> **Nota sobre Arquitetura e Escopo de PoC:**  
+> Por se tratar de uma Prova de Conceito com o objetivo único de validar a concorrência atômica, baixa latência e resiliência de locks distribuídos, o design de código priorizou objetividade, clareza e baixo atrito de prototipação. Por essa razão, **não** foram introduzidas camadas formais de abstração como separação rígida de Repositórios genéricos, Interfaces desacopladas, nem arquiteturas complexas como **Clean Architecture completa**, **Arquitetura Hexagonal (Ports & Adapters)** ou **DDD Tático formal**.  
+> Em um projeto corporativo definitivo para produção em larga escala, tais arquiteturas seriam a escolha natural para garantir total independência de frameworks, inversão de controle formal e facilidade de substituição ou mock de infraestrutura.
+
 ---
 
 ## 🎯 Objetivo da PoC
@@ -28,7 +33,7 @@ flowchart TD
         Mongo -. "Falha no Mongo? Reverte Lock via Lua Script" .-> Redis
     end
 
-    API -->|"4. 200 OK (Assento retido com cartId por 10 min)"| Client
+    API -->|"4. 201 Created (Assento retido com cartId por 10 min)"| Client
 ```
 
 ---
@@ -40,6 +45,7 @@ flowchart TD
 | **Node.js 26** (Alpine) | Runtime JavaScript de última geração com suporte a ESM nativo |
 | **TypeScript** (v5) | Tipagem estática e segurança em tempo de compilação |
 | **Fastify** (v5) | Framework HTTP focado em altíssimo throughput e baixa latência |
+| **Vitest** (v5) | Framework moderno e ultrarrápido para testes automatizados de concorrência |
 | **Zod** (v3) | Validação estrita de parâmetros de rota, payloads e variáveis de ambiente |
 | **MongoDB** (v7.0) | Banco de dados NoSQL com Replica Set de nó único (`rs0`) e transações |
 | **Driver Nativo MongoDB** | Manipulação direta sem overhead de hidratação de ODM |
@@ -82,12 +88,15 @@ flowchart TD
 │   │   └── redis/
 │   │       ├── client.ts                        # Conexão e cliente ioredis
 │   │       └── redis-lock-service.ts            # Lock distribuído (SET NX EX e release via Lua)
+│   ├── test/
+│   │   └── concurrency.test.ts                  # Teste automatizado de concorrência com Vitest
 │   ├── app.ts                                   # Setup do Fastify, rotas e tratamento global de erros
 │   └── server.ts                                # Entrada da aplicação com graceful shutdown
 ├── Dockerfile                                   # Imagem Node 26 Alpine para desenvolvimento
 ├── docker-compose.yml                           # MongoDB 7, Redis 7, Redis Insight e API (Node 26)
 ├── biome.json                                   # Configuração do Biome
-└── tsconfig.json                                # Configuração do TypeScript ESM (NodeNext)
+├── tsconfig.json                                # Configuração do TypeScript ESM (NodeNext)
+└── vitest.config.ts                             # Configuração do Vitest
 ```
 
 ---
@@ -142,6 +151,34 @@ docker compose exec api pnpm db:seed
 
 ---
 
+## 🧪 Testes Automatizados de Concorrência (Vitest)
+
+O projeto possui uma suite de testes automatizados em [src/test/concurrency.test.ts](file://./src/test/concurrency.test.ts) que valida matematicamente a prevenção de *overbooking*:
+
+1. **Disputa de 10 Requisições Simultâneas (`Promise.all`):**
+   - 10 requisições simultâneas disputam o mesmo assento (`A10`) com `cartIds` distintos.
+   - Valida que **exatamente 1 requisição obtém HTTP 201** e **as outras 9 recebem HTTP 409 Conflict**.
+   - Confirma no MongoDB que o assento está `HELD` pelo `cartId` vencedor.
+   - Confirma no Redis que apenas 1 lock existe com TTL ativo.
+2. **Liberação Manual via DELETE:**
+   - Valida cancelamento voluntário do carrinho anterior seguido por aquisição imediata com sucesso por um novo carrinho.
+3. **Expiração Real de TTL:**
+   - Valida que após o término do TTL (tempo de hold expirado), uma nova requisição retoma o assento com sucesso.
+
+### Executando os Testes
+
+Via container Docker:
+```bash
+docker compose exec api pnpm test
+```
+
+Ou no host local:
+```bash
+pnpm test
+```
+
+---
+
 ## 📡 Guia de Uso da API (Endpoints REST)
 
 A API roda por padrão na porta **3001** (`http://localhost:3001`).
@@ -180,7 +217,7 @@ curl -s -i -X POST http://localhost:3001/api/v1/sessions/sessao-cinema-101/seats
   -d '{"cartId": "cart-uuid-101"}'
 ```
 
-**Resposta de Sucesso (HTTP 200):**
+**Resposta de Sucesso (HTTP 201 Created):**
 ```json
 {
   "message": "Assento A1 bloqueado temporariamente com sucesso.",
@@ -277,6 +314,8 @@ Abra no navegador:
 | :--- | :--- |
 | `docker compose up -d` | Sobe o ambiente completo (DBs + API em Node 26) |
 | `docker compose exec api pnpm db:seed` | Executa o seed de assentos no MongoDB via Docker |
+| `docker compose exec api pnpm test` | Executa os testes automatizados de concorrência com Vitest |
 | `docker compose logs -f api` | Acompanha os logs e hot-reload da aplicação |
+| `pnpm test` | Executa a suite de testes no host |
 | `pnpm lint` | Executa a validação de linter com Biome |
 | `pnpm format` | Formata o código-fonte seguindo o padrão Biome |

@@ -48,7 +48,7 @@ export const seatRoutes: FastifyPluginAsync = async (fastify) => {
       ttlSeconds,
     });
 
-    return reply.status(200).send({
+    return reply.status(201).send({
       message: `Assento ${seatNumber} bloqueado temporariamente com sucesso.`,
       seat: {
         sessionId: seat.sessionId,
@@ -104,4 +104,3 @@ export const seatRoutes: FastifyPluginAsync = async (fastify) => {
     });
   });
 };
-

@@ -8,6 +8,8 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "db:seed": "tsx src/infra/db/seed.ts",
     "lint": "biome check src",
     "format": "biome format --write src"
@@ -26,6 +28,7 @@
     "@biomejs/biome": "^1.9.4",
     "@types/node": "^22.13.4",
     "tsx": "^4.19.3",
-    "typescript": "^5.7.3"
+    "typescript": "^5.7.3",
+    "vitest": "^5.1.0"
   }
 }
