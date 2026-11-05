@@ -10,24 +10,25 @@
 
 Avaliar a eficiência e a robustez de um modelo de concorrência em duas camadas para reservas de assentos de alta demanda:
 
-1. **Camada 1 — Lock Distribuído em Memória (Redis):** Bloqueio temporário ultra-rápido via `SET seat_lock:<sessionId>:<seatId> <cartId> NX EX <ttl>`. Requisições concorrentes perdedoras são rejeitadas em submilissegundos com HTTP `409 Conflict`, sem onerar o banco de dados.
+1. **Camada 1 — Lock Distribuído em Memória (Redis):** Bloqueio temporário ultra-rápido via `SET seat_lock:<sessionId>:<seatNumber> <cartId> NX EX <ttlSeconds>`. Requisições concorrentes perdedoras são rejeitadas em submilissegundos com HTTP `409 Conflict`, sem onerar o banco de dados.
 2. **Camada 2 — Persistência e Consistência Atômica (MongoDB):** Assentos modelados como **documentos individuais materializados** na coleção `session_seats`, com índice único composto `{ sessionId: 1, seatNumber: 1 }` e mutações de estado via `findOneAndUpdate` atômico no motor WiredTiger.
+3. **Mecanismo de Compensação (Rollback Automático):** Caso o lock no Redis seja adquirido com sucesso, mas o assento no MongoDB já não esteja mais disponível (`AVAILABLE` ou `HELD` expirado), o lock é imediatamente desfeito via script Lua e HTTP 409 é retornado.
 
 ```mermaid
 flowchart TD
-    Client["Cliente / Browser"] -->|"1. POST /seats/:seatId/hold"| API["Fastify Engine"]
+    Client["Cliente / Requisição Concorrente"] -->|"1. POST /seats/:seatNumber/hold"| API["Fastify Engine"]
     
-    subgraph Camada 1: Fast Fail Lock
-        API -->|"2. SET NX EX (Lua safe release)"| Redis[("Redis 7 (In-Memory)")]
-        Redis -- "Lock Negado (409)" --> API
+    subgraph Camada 1: Fast Fail Distributed Lock
+        API -->|"2. SET NX EX (ioredis)"| Redis[("Redis 7 (In-Memory)")]
+        Redis -- "Lock Negado (409 Conflict)" --> API
     end
 
-    subgraph Camada 2: Persistência Atômica
-        API -->|"3. findOneAndUpdate (Status: AVAILABLE)"| Mongo[("MongoDB 7 (Replica Set rs0)")]
-        Mongo -. "Garante Document-Level Lock & Unique Index" .-> Mongo
+    subgraph Camada 2: Persistência Atômica Condicional
+        API -->|"3. findOneAndUpdate (Status: AVAILABLE ou expirado)"| Mongo[("MongoDB 7 (Replica Set rs0)")]
+        Mongo -. "Falha no Mongo? Reverte Lock via Lua Script" .-> Redis
     end
 
-    API -->|"4. 200 OK (Assento retido por 10 min)"| Client
+    API -->|"4. 200 OK (Assento retido com cartId por 10 min)"| Client
 ```
 
 ---
@@ -36,15 +37,16 @@ flowchart TD
 
 | Tecnologia | Finalidade |
 | :--- | :--- |
-| **Node.js** (v22+) | Runtime JavaScript moderno com suporte nativo a ESM (`"type": "module"`) |
+| **Node.js 26** (Alpine) | Runtime JavaScript de última geração com suporte a ESM nativo |
 | **TypeScript** (v5) | Tipagem estática e segurança em tempo de compilação |
 | **Fastify** (v5) | Framework HTTP focado em altíssimo throughput e baixa latência |
-| **MongoDB** (v7.0) | Banco de dados NoSQL com Replica Set de nó único (`rs0`) |
+| **Zod** (v3) | Validação estrita de parâmetros de rota, payloads e variáveis de ambiente |
+| **MongoDB** (v7.0) | Banco de dados NoSQL com Replica Set de nó único (`rs0`) e transações |
 | **Driver Nativo MongoDB** | Manipulação direta sem overhead de hidratação de ODM |
-| **Redis** (v7.0) | Cache e distributed lock em memória |
-| **ioredis** | Cliente Redis robusto com suporte a scripts Lua e reconexão |
+| **Redis** (v7.0) | Cache e distributed lock em memória com execução atômica via Lua Scripts |
+| **ioredis** | Cliente Redis performático com pool de conexões e reconexão automática |
 | **Biome** | Formatação e linter de código ultrarrápidos |
-| **Docker & Docker Compose** | Orquestração simplificada dos serviços auxiliares e Redis Insight |
+| **Docker & Docker Compose** | Orquestração completa dos contêineres com **Hot-Reload em tempo real** |
 
 ---
 
@@ -57,20 +59,34 @@ flowchart TD
 │       ├── 001-seat-locking-and-concurrency.md  # ADR: Estratégia de Lock Redis + Mongo
 │       └── 002-individual-seat-entities.md      # ADR: Assentos como documentos materializados
 ├── src/
+│   ├── application/
+│   │   └── use-cases/
+│   │       ├── hold-seat.use-case.ts            # Bloqueio temporário (Hold) em 2 camadas
+│   │       ├── confirm-seat.use-case.ts         # Confirmação atômica de compra (Reserved)
+│   │       ├── release-seat.use-case.ts         # Liberação manual antecipada
+│   │       └── list-seats.use-case.ts           # Listagem do mapa da sessão e status efetivo
+│   ├── domain/
+│   │   └── errors/
+│   │       └── seat-errors.ts                   # Erros de domínio mapeados para códigos HTTP
+│   ├── http/
+│   │   └── routes/
+│   │       └── seat-routes.ts                   # Rotas Fastify validadas com esquemas Zod
 │   ├── config/
-│   │   └── env.ts                               # Validação tipada de variáveis de ambiente com Zod
+│   │   └── env.ts                               # Variáveis de ambiente tipadas com Zod
 │   ├── infra/
 │   │   ├── db/
 │   │   │   ├── models/
-│   │   │   │   └── session-seat.ts              # Tipos TypeScript para a entidade SessionSeat
+│   │   │   │   └── session-seat.ts              # Modelagem da entidade SessionSeat
 │   │   │   ├── mongo.ts                         # Conexão e singleton do MongoDB nativo
-│   │   │   └── seed.ts                          # Script de criação de índice composto e seed
+│   │   │   └── seed.ts                          # Criação de índice único composto e 20 assentos
 │   │   └── redis/
-│   │       └── client.ts                        # Conexão e cliente ioredis
-│   ├── app.ts                                   # Instância do Fastify e rotas de infraestrutura
-│   └── server.ts                                # Ponto de entrada com graceful shutdown
-├── docker-compose.yml                           # MongoDB 7 (rs0), Redis 7 e Redis Insight
-├── biome.json                                   # Configuração de linter e formatação
+│   │       ├── client.ts                        # Conexão e cliente ioredis
+│   │       └── redis-lock-service.ts            # Lock distribuído (SET NX EX e release via Lua)
+│   ├── app.ts                                   # Setup do Fastify, rotas e tratamento global de erros
+│   └── server.ts                                # Entrada da aplicação com graceful shutdown
+├── Dockerfile                                   # Imagem Node 26 Alpine para desenvolvimento
+├── docker-compose.yml                           # MongoDB 7, Redis 7, Redis Insight e API (Node 26)
+├── biome.json                                   # Configuração do Biome
 └── tsconfig.json                                # Configuração do TypeScript ESM (NodeNext)
 ```
 
@@ -79,23 +95,12 @@ flowchart TD
 ## 🚀 Como Executar
 
 ### Pré-requisitos
-- [Node.js](https://nodejs.org/) `>= 22.0.0`
-- [pnpm](https://pnpm.io/) `>= 9.0.0`
-- [Docker](https://www.docker.com/) e Docker Compose
+- [Docker](https://www.docker.com/) e Docker Compose instalados
+- Opcional para rodar fora do Docker: [Node.js](https://nodejs.org/) `>= 22` e [pnpm](https://pnpm.io/) `>= 11`
 
 ---
 
-### Passo 1: Clonar o Repositório e Instalar Dependências
-
-```bash
-git clone <url-do-repositorio>
-cd asaas-poc
-pnpm install
-```
-
----
-
-### Passo 2: Configurar as Variáveis de Ambiente
+### Passo 1: Configurar Variáveis de Ambiente
 
 Copie o arquivo de exemplo `.env.example` para `.env`:
 
@@ -103,24 +108,11 @@ Copie o arquivo de exemplo `.env.example` para `.env`:
 cp .env.example .env
 ```
 
-Configurações padrão presentes no `.env`:
-```env
-PORT=3001
-HOST=0.0.0.0
-NODE_ENV=development
-
-MONGO_URI=mongodb://localhost:27017/cinema?replicaSet=rs0&directConnection=true
-MONGO_DB_NAME=cinema
-
-REDIS_HOST=localhost
-REDIS_PORT=6379
-```
-
 ---
 
-### Passo 3: Subir os Containers Docker (Ambiente Completo com Node 26)
+### Passo 2: Subir os Containers Docker (Ambiente Completo com Node 26)
 
-Inicie os contêineres do MongoDB (com replica set `rs0`), Redis, Redis Insight e a API Node 26 com hot-reload automático:
+Inicie todos os contêineres:
 
 ```bash
 docker compose up -d
@@ -132,66 +124,134 @@ docker compose ps
 ```
 
 > [!TIP]
-> **Hot-Reload em Tempo Real:** O serviço `api` está executando em **Node.js 26 (Alpine)** com `tsx watch` e sincronização de volumes. Ao alterar e salvar qualquer arquivo em `src/` na sua máquina hospedeira, o servidor reinicia automaticamente e aplica a mudança em milissegundos sem necessidade de reiniciar o container Docker manualmente!
->
-> Para acompanhar os logs de hot-reload em tempo real:
+> **Hot-Reload em Tempo Real:** O serviço `api` roda dentro do container com `tsx watch` e sincronização de volumes. Ao alterar e salvar qualquer arquivo em `src/` no seu editor, o serviço reinicia e aplica as mudanças automaticamente!
+> Para acompanhar os logs:
 > ```bash
 > docker compose logs -f api
 > ```
 
 ---
 
-### Passo 4: Executar o Seed do Banco de Dados
+### Passo 3: Executar o Seed Inicial
 
-O script cria o índice composto `{ sessionId: 1, seatNumber: 1 }` com `{ unique: true }` na collection `session_seats` e insere 20 assentos de teste (`A1` a `A20`) para a sessão `sessao-cinema-101`.
+Cria o índice único composto `{ sessionId: 1, seatNumber: 1 }` (`unique: true`) na collection `session_seats` e popula a sessão `sessao-cinema-101` com 20 assentos (`A1` a `A20`):
 
-Você pode executar diretamente via container Docker:
 ```bash
 docker compose exec api pnpm db:seed
 ```
-*(Ou localmente no host com `pnpm db:seed`)*
 
-Saída esperada:
-```text
-🌱 Starting database seed...
-Creating compound unique index { sessionId: 1, seatNumber: 1 }...
-✅ Index created or verified: session_seat_unique_idx
-Populating session "sessao-cinema-101" with 20 seats (A1 to A20)...
-✅ Inserted 20 seats for session "sessao-cinema-101".
-🌱 Seed completed successfully!
+---
+
+## 📡 Guia de Uso da API (Endpoints REST)
+
+A API roda por padrão na porta **3001** (`http://localhost:3001`).
+
+### 1. Mapa da Sessão (Listar Assentos)
+Retorna o mapa de assentos da sessão com contadores agregados e status efetivo:
+- Se um assento estiver `HELD` e o tempo de expiração tiver vencido, o status retornado é automaticamente calculado como `AVAILABLE` (RF05).
+
+```bash
+curl -s http://localhost:3001/api/v1/sessions/sessao-cinema-101/seats
+```
+
+**Exemplo de Resposta (HTTP 200):**
+```json
+{
+  "sessionId": "sessao-cinema-101",
+  "totalSeats": 20,
+  "availableCount": 20,
+  "heldCount": 0,
+  "reservedCount": 0,
+  "seats": [
+    { "seatNumber": "A1", "status": "AVAILABLE", "expiresAt": null },
+    { "seatNumber": "A2", "status": "AVAILABLE", "expiresAt": null }
+  ]
+}
 ```
 
 ---
 
-### Passo 5: Testar e Desenvolver
+### 2. Bloqueio Temporário (Hold Seat)
+Retém temporariamente uma poltrona vinculada ao `cartId` por 10 minutos (TTL padrão configurável via `.env` ou parâmetro `ttlSeconds` opcional).
 
-O servidor já está ativo dentro do container ouvindo na porta mapeada `http://localhost:3001`.
-
-Para testar a saúde da aplicação:
 ```bash
-curl http://localhost:3001/health
-```
-pnpm dev
+curl -s -i -X POST http://localhost:3001/api/v1/sessions/sessao-cinema-101/seats/A1/hold \
+  -H "Content-Type: application/json" \
+  -d '{"cartId": "cart-uuid-101"}'
 ```
 
-O servidor estará ouvindo em: `http://localhost:3001`.
+**Resposta de Sucesso (HTTP 200):**
+```json
+{
+  "message": "Assento A1 bloqueado temporariamente com sucesso.",
+  "seat": {
+    "sessionId": "sessao-cinema-101",
+    "seatNumber": "A1",
+    "status": "HELD",
+    "cartId": "cart-uuid-101",
+    "expiresAt": "2026-11-05T14:36:21.151Z"
+  }
+}
+```
+
+**Tentativa Concorrente Duplicada (HTTP 409 Conflict):**
+```json
+{
+  "statusCode": 409,
+  "error": "SEAT_ALREADY_TAKEN",
+  "message": "Assento A1 já está temporariamente retido ou ocupado por outro usuário."
+}
+```
 
 ---
 
-## 🔍 Testando o Ambiente
-
-### Healthcheck da Aplicação
-Com o servidor rodando, consulte o status dos serviços conectados:
+### 3. Confirmação da Reserva (Confirm Seat)
+Efetiva a compra do ingresso, convertendo o status de `HELD` para `RESERVED` e removendo com segurança o lock do Redis.
 
 ```bash
-curl http://localhost:3001/health
+curl -s -i -X POST http://localhost:3001/api/v1/sessions/sessao-cinema-101/seats/A1/confirm \
+  -H "Content-Type: application/json" \
+  -d '{"cartId": "cart-uuid-101"}'
 ```
 
-Resposta esperada (HTTP 200):
+**Resposta de Sucesso (HTTP 200):**
+```json
+{
+  "message": "Assento A1 confirmado e reservado com sucesso.",
+  "seat": {
+    "sessionId": "sessao-cinema-101",
+    "seatNumber": "A1",
+    "status": "RESERVED",
+    "cartId": "cart-uuid-101",
+    "updatedAt": "2026-11-05T14:17:30.872Z"
+  }
+}
+```
+
+---
+
+### 4. Liberação Manual (Cancelamento / Release)
+Permite que o usuário desista da escolha antes dos 10 minutos, liberando o assento imediatamente para `AVAILABLE` tanto no MongoDB quanto no Redis.
+
+```bash
+curl -s -i -X DELETE http://localhost:3001/api/v1/sessions/sessao-cinema-101/seats/A2/hold \
+  -H "Content-Type: application/json" \
+  -d '{"cartId": "cart-uuid-101"}'
+```
+
+---
+
+### 5. Checagem de Saúde (Healthcheck)
+```bash
+curl -s http://localhost:3001/health
+```
+
+**Resposta (HTTP 200):**
 ```json
 {
   "status": "healthy",
-  "timestamp": "2026-11-05T13:34:09.375Z",
+  "version": "1.0.0-poc",
+  "timestamp": "2026-11-05T14:18:00.000Z",
   "services": {
     "mongo": "up",
     "redis": "up"
@@ -199,11 +259,15 @@ Resposta esperada (HTTP 200):
 }
 ```
 
-### Visualização de Dados (Redis Insight)
-Acesse a interface visual do Redis Insight no navegador:
+---
+
+## 🖥️ Inspeção Visual com Redis Insight
+
+Abra no navegador:
 👉 [http://localhost:5540](http://localhost:5540)
 
-- Adicione uma nova conexão apontando para o Host `redis` (porta `6379`) dentro da rede Docker, ou `localhost:6379` diretamente do host.
+- Adicione uma nova conexão apontando para o Host `redis` na porta `6379`.
+- Você poderá visualizar as chaves ativas no formato `seat_lock:<sessionId>:<seatNumber>` e acompanhar a contagem regressiva do TTL em tempo real.
 
 ---
 
@@ -211,22 +275,8 @@ Acesse a interface visual do Redis Insight no navegador:
 
 | Comando | Descrição |
 | :--- | :--- |
-| `pnpm dev` | Inicia o servidor Fastify com recarregamento a quente via `tsx watch` |
-| `pnpm build` | Compila o TypeScript para a pasta `dist/` |
-| `pnpm start` | Executa o código compilado em produção |
-| `pnpm db:seed` | Executa o seed de assentos e índice no MongoDB |
+| `docker compose up -d` | Sobe o ambiente completo (DBs + API em Node 26) |
+| `docker compose exec api pnpm db:seed` | Executa o seed de assentos no MongoDB via Docker |
+| `docker compose logs -f api` | Acompanha os logs e hot-reload da aplicação |
 | `pnpm lint` | Executa a validação de linter com Biome |
 | `pnpm format` | Formata o código-fonte seguindo o padrão Biome |
-
----
-
-## 📋 Endpoints Planejados na PoC
-
-Conforme especificado no [docs/PRD.md](file:///Users/rparana/dev/private/asaas-poc/docs/PRD.md):
-
-- `GET /health` — Status dos serviços integrados (Implementado)
-- `GET /api/v1/sessions/:sessionId/seats` — Lista assentos e estados (`AVAILABLE`, `HELD`, `RESERVED`)
-- `POST /api/v1/sessions/:sessionId/seats/:seatId/hold` — Bloqueio temporário (10 min) com `cartId`
-- `POST /api/v1/sessions/:sessionId/seats/:seatId/confirm` — Confirmação de compra
-- `DELETE /api/v1/sessions/:sessionId/seats/:seatId/hold` — Liberação manual de assento
-

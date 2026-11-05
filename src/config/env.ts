@@ -11,6 +11,7 @@ const envSchema = z.object({
   MONGO_DB_NAME: z.string().default('cinema'),
   REDIS_HOST: z.string().default('localhost'),
   REDIS_PORT: z.coerce.number().default(6379),
+  SEAT_HOLD_TTL_SECONDS: z.coerce.number().default(600),
 });
 
 export const env = envSchema.parse(process.env);
